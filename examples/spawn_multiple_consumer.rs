@@ -1,7 +1,14 @@
 //! To run the example with logs printed to stdout, run the following command:
 //!
 //! ```bash
-//! RUST_LOG=info cargo run --example spawn_multiple_consumer
+//! export EVENT_HUB_CONNECTION_STRING="Endpoint=sb://....servicebus.windows.net/;SharedAccessKeyName=...;SharedAccessKey=...=;EntityPath=dmv"
+//! export EVENT_HUB_NAME="dmv"
+//! export EVENT_HUB_NUM_PARTITIONS="100"
+//! export EVENT_HUB_PREFETCH_COUNT="3000"
+//! export STREAM_FOR_SECONDS="3000"
+//! export RUST_BACKTRACE=1 
+//! export RUST_LOG=debug 
+//! RUST_BACKTRACE=1 RUST_LOG=debug cargo run --example spawn_multiple_consumer
 //! ```
 
 use std::time::Duration;
@@ -13,7 +20,8 @@ use futures_util::StreamExt;
 use tokio_util::sync::CancellationToken;
 
 async fn consumer_main(
-    index: usize,
+    partition_num: usize,
+    prefetch_count: u32,
     connection_string: impl Into<String>,
     event_hub_name: impl Into<String>,
     client_options: EventHubConsumerClientOptions,
@@ -27,9 +35,9 @@ async fn consumer_main(
     )
     .await?;
     let partition_ids = consumer.get_partition_ids().await?;
-    let partition_id = &partition_ids[index];
+    let partition_id = &partition_ids[partition_num];
     let starting_position = EventPosition::earliest();
-    let read_event_options = ReadEventOptions::default();
+    let read_event_options = ReadEventOptions::default().with_prefetch_count(prefetch_count);
 
     let mut stream = consumer
         .read_events_from_partition(partition_id, starting_position, read_event_options)
@@ -44,9 +52,10 @@ async fn consumer_main(
             event = stream.next() => {
                 match event {
                     Some(Ok(event)) => {
+                        let sequence_number = event.sequence_number();
                         let body = event.body()?;
-                        let value = std::str::from_utf8(body)?;
-                        log::info!("{}: {:?}", partition_id, value);
+                        let _value = std::str::from_utf8(body)?;
+                        log::info!("{}: {:?}", partition_id, sequence_number);
                     },
                     Some(Err(e)) => {
                         log::error!("{}: {:?}", partition_id, e);
@@ -65,20 +74,32 @@ async fn consumer_main(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    env_logger::init();
-    dotenv::from_filename(".env")?;
 
-    let connection_string = std::env::var("EVENT_HUBS_CONNECTION_STRING")?;
+    env_logger::init();
+
+    let connection_string = std::env::var("EVENT_HUB_CONNECTION_STRING")?;
     let event_hub_name = std::env::var("EVENT_HUB_NAME")?;
+    let num_partitions: usize = std::env::var("EVENT_HUB_NUM_PARTITIONS").unwrap_or_else(|_| "3".to_string()).parse().unwrap();
+    let stream_duration_in_seconds: u64 = std::env::var("STREAM_FOR_SECONDS").unwrap_or_else(|_| "10".to_string()).parse().unwrap();
+    let prefetch_count: u32 = std::env::var("EVENT_HUB_PREFETCH_COUNT").unwrap_or_else(|_| "300".to_string()).parse().unwrap();
+    
+    log::info!("Connection string: {}", connection_string);
+    log::info!("Event hub name: {}", event_hub_name);
+    log::info!("Number of partitions: {}", num_partitions);
+    log::info!("Stream duration in seconds: {}", stream_duration_in_seconds);
+    log::info!("Pre-fetch count: {}", prefetch_count);
+
     let client_options = EventHubConsumerClientOptions::default();
 
-    // We are going to use a cancellation token to stop the spawned tasks.
+    // Cancellation token to stop the spawned tasks.
     let cancel = CancellationToken::new();
-    // Assuming that there are three partitions, and we will create one consumer for each partition.
+
+    // Create one consumer for each partition.
     let mut handles = Vec::new();
-    for i in 0..3 {
+    for i in 0..num_partitions {
         let handle = tokio::spawn(consumer_main(
             i,
+            prefetch_count,
             connection_string.clone(),
             event_hub_name.clone(),
             client_options.clone(),
@@ -87,8 +108,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         handles.push(handle);
     }
 
-    // Wait for 10 seconds and then cancel the spawned tasks.
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    // Wait and  cancel the spawned tasks.
+    tokio::time::sleep(Duration::from_secs(stream_duration_in_seconds)).await;
     cancel.cancel();
     for handle in handles {
         handle.await??;
