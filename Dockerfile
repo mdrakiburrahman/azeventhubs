@@ -6,8 +6,9 @@ COPY ./ .
 
 RUN cargo build
 
-FROM alpine
+FROM rust:1.80 AS runtime
 WORKDIR /build
 
-COPY --from=builder /build/target/debug/examples/spawn_multiple_consumer ./
-ENTRYPOINT ["/build/spawn_multiple_consumer"]
+COPY --from=builder /build/target/debug/examples/spawn_partition_receiver ./
+RUN chmod +x /build/spawn_partition_receiver
+ENTRYPOINT ["/build/spawn_partition_receiver"]

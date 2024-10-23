@@ -8,5 +8,6 @@ Cargo.lock.orig
 
 # VSCode
 .vscode/
+.scratch/
 
 .env
